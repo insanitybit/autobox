@@ -18,7 +18,7 @@ Note that the macro and autobox "language" are unstable and likely to change.
 
 Here's a very brief example of what using `autobox` should look like:
 
-```
+```rust
 #[effect::declare(
     args=(_ as F, _ as B),
     side_effects=(

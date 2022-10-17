@@ -1,6 +1,6 @@
 # autobox
 
-A set of tools and libraries for automatically generating and initiating sandboxes for Rust programs
+_Compile time analysis for runtime sandboxing_
 
 The intent is to be able to one day add a few macros to your code to label your
 functions' effects and `autobox-cli` will generate a sandbox for your binary to
@@ -18,7 +18,7 @@ Note that the macro and autobox "language" are unstable and likely to change.
 
 Here's a very brief example of what using `autobox` should look like:
 
-```
+```rust
 #[effect::declare(
     args=(_ as F, _ as B),
     side_effects=(

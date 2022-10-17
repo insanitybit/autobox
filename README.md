@@ -1,6 +1,6 @@
 # autobox
 
-A set of tools and libraries for automatically generating and initiating sandboxes for Rust programs
+_Compile time analysis for runtime sandboxing_
 
 The intent is to be able to one day add a few macros to your code to label your
 functions' effects and `autobox-cli` will generate a sandbox for your binary to

@@ -296,6 +296,7 @@ the system. When that is done I'm sure some aspects of the roadmap will
 change, but _generally speaking_, this is what I'd like to do:
 
 1. Better define and document the `effect` language
-2. Implement tracing of variables for `entrypoint`
-3. Implement `infer`
-4. Generation of a sandbox
+2. Implement an actual parser for the `effect` language
+3. Implement tracing of variables for `entrypoint`
+4. Implement `infer`
+5. Generation of a sandbox, probably seccomp to start with

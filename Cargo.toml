@@ -3,4 +3,5 @@ members = [
     "./autobox-cli",
     "./example-app",
     "./autobox-effect",
+    "./autobox-effect-parser",
 ]

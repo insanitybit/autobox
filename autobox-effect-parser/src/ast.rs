@@ -6,7 +6,7 @@ use nom::bytes::complete::{
 use nom::character::complete::{alpha1, alphanumeric1, multispace0};
 use nom::combinator::{map_res, opt, recognize};
 use nom::multi::{many0_count, separated_list0};
-use nom::sequence::{delimited, pair, preceded};
+use nom::sequence::{delimited, pair, preceded, tuple};
 
 // Stolen straight from nom, identifiers are the same as in rust
 pub fn identifier(input: &str) -> IResult<&str, &str> {
@@ -180,7 +180,7 @@ impl<'a> SideEffectStmt<'a> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SideEffects<'a> {
     pub side_effect_stmts: Vec<SideEffectStmt<'a>>,
 }
@@ -205,11 +205,13 @@ pub struct DeclareMacro<'a> {
 
 impl<'a> DeclareMacro<'a> {
     pub fn parse(input: &'a str) -> IResult<&str, Self> {
-        let (input, args) = opt(delimited(ws(tag("args=")), Args::parse, ws(tag(","))))(input)?;
-        let (input, side_effects) = preceded(ws(tag("side_effects=")), SideEffects::parse)(input)?;
+        let (input, _) = opt(ws(tag("(")))(input)?;
+        let (input, args) = opt(delimited(preceded(ws(tag("args")), ws(tag("="))), Args::parse, ws(tag(","))))(input)?;
+        let (input, side_effects) = preceded(preceded(ws(tag("side_effects")), ws(tag("="))), SideEffects::parse)(input)?;
 
-        let (input, returns) = opt(preceded(ws(tag("returns=")), Expr::parse))(input)?;
-
+        let (input, returns) = opt(preceded(preceded(ws(tag("returns")), ws(tag("="))), tuple((opt(ws(tag("("))), Expr::parse, opt(ws(tag(")")))))))(input)?;
+        let returns = returns.map(|(_, expr, _)| expr);
+        let (input, _) = opt(ws(tag(")")))(input)?;
         Ok((
             input,
             Self {
@@ -343,12 +345,13 @@ mod tests {
     #[test]
     fn test_declare_macro_parse() {
         let declare_macro = r"
-            args=(foo as F, baz as F),
+            args=(foo as F, baz as B),
             side_effects=(
                 eval(F + '/') as FS,
                 eval(FS + B) as result,
                 read_file(result)
-            )
+            ),
+            returns=(F + '/' + B)
         ";
         let (rest, declare_macro) = DeclareMacro::parse(declare_macro).unwrap();
         assert_eq!(rest, "");
@@ -356,7 +359,7 @@ mod tests {
         assert_eq!(declare_macro.args.args[0].arg_name, "foo");
         assert_eq!(declare_macro.args.args[0].arg_binding, "F");
         assert_eq!(declare_macro.args.args[1].arg_name, "baz");
-        assert_eq!(declare_macro.args.args[1].arg_binding, "F");
+        assert_eq!(declare_macro.args.args[1].arg_binding, "B");
         assert_eq!(declare_macro.side_effects.side_effect_stmts.len(), 3);
         assert_eq!(
             declare_macro.side_effects.side_effect_stmts[0].side_effect_name,

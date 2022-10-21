@@ -1,15 +1,14 @@
-#![allow(unused_imports)]
-
+use nom::{error::ParseError, IResult};
 use nom::branch::alt;
 use nom::bytes::complete::{
-    tag, take, take_till, take_till1, take_until, take_until1, take_while, take_while1,
+    tag, take, take_till1,
 };
 use nom::character::complete::{alpha1, alphanumeric1, multispace0};
-use nom::combinator::{map_res, not, opt, recognize};
-use nom::multi::{many0, many0_count, separated_list0};
+use nom::combinator::{map_res, opt, recognize};
+use nom::multi::{many0_count, separated_list0};
 use nom::sequence::{delimited, pair, preceded};
-use nom::{error::ParseError, sequence::separated_pair, IResult};
 
+// Stolen straight from nom, identifiers are the same as in rust
 pub fn identifier(input: &str) -> IResult<&str, &str> {
     recognize(pair(
         alt((alpha1, tag("_"))),
@@ -34,7 +33,7 @@ pub struct Arg<'a> {
 }
 
 impl<'a> Arg<'a> {
-    fn parse(input: &'a str) -> IResult<&str, Self> {
+    pub fn parse(input: &'a str) -> IResult<&str, Self> {
         let (input, arg_name) = ws(identifier)(input)?;
         let (input, arg_binding) = preceded(ws(tag("as")), identifier)(input)?;
 
@@ -54,7 +53,7 @@ pub struct Args<'a> {
 }
 
 impl<'a> Args<'a> {
-    fn parse(input: &'a str) -> IResult<&str, Self> {
+    pub fn parse(input: &'a str) -> IResult<&str, Self> {
         let (input, args) = delimited(
             ws(tag("(")),
             separated_list0(ws(tag(",")), Arg::parse),
@@ -72,14 +71,12 @@ pub struct Add<'a> {
 
 impl<'a> Add<'a> {
     fn parse(input: &'a str) -> IResult<&str, Self> {
-        println!("Add::parse({:?})", input);
         let (input, lhs) = ws(take_till1(|s| s == '+' || s == ')'))(input)?;
         let _ = take(1usize)(input)?.1;
 
         let (_, lhs) = ws(Expr::parse)(lhs)?;
         let (input, _) = take(1usize)(input)?;
-        let (_, rhs) = ws(Expr::parse)(input)?;
-        println!("Add::parse({:?}) => {:?}", input, rhs);
+        let (input, rhs) = ws(Expr::parse)(input)?;
         Ok((input, Self { lhs, rhs }))
     }
 }
@@ -90,13 +87,11 @@ pub struct LitStr<'a> {
 }
 
 impl<'a> LitStr<'a> {
-    fn parse(input: &'a str) -> IResult<&str, Self> {
-        println!("litstr input = {:?}", input);
+    pub fn parse(input: &'a str) -> IResult<&str, Self> {
         let (input, value) = alt((
             delimited(tag("'"), take_till1(|c| c == '\''), tag("'")),
             delimited(tag("\""), take_till1(|c| c == '"'), tag("\"")),
         ))(input)?;
-        println!("litstr value = {:?}", value);
         Ok((input, Self { value }))
     }
 }
@@ -107,10 +102,8 @@ pub struct Var<'a> {
 }
 
 impl<'a> Var<'a> {
-    fn parse(input: &'a str) -> IResult<&str, Self> {
-        println!("var input = {:?}", input);
+    pub fn parse(input: &'a str) -> IResult<&str, Self> {
         let (input, name) = identifier(input)?;
-        println!("var name = {:?}", name);
         Ok((input, Self { name }))
     }
 }
@@ -150,7 +143,6 @@ impl<'a> Expr<'a> {
 
 impl<'a> Expr<'a> {
     pub fn parse(input: &'a str) -> IResult<&str, Self> {
-        println!("Parsing expr: {}", input);
         let (input, expr) = alt((
             map_res(ws(Add::parse), |add| {
                 Ok::<Expr<'_>, &str>(Expr::Add(Box::new(add)))
@@ -158,8 +150,6 @@ impl<'a> Expr<'a> {
             map_res(ws(LitStr::parse), |s| Ok::<Expr<'_>, &str>(Expr::LitStr(s))),
             map_res(ws(Var::parse), |var| Ok::<Expr<'_>, &str>(Expr::Var(var))),
         ))(input)?;
-
-        println!("Parsed expr: {:?}", expr);
 
         Ok((input, expr))
     }
@@ -176,15 +166,8 @@ impl<'a> SideEffectStmt<'a> {
     pub fn parse(input: &'a str) -> IResult<&str, Self> {
         let (input, side_effect_name) = ws(identifier)(input)?;
         let (input, args) = delimited(ws(tag("(")), take_till1(|c| c == ')'), ws(tag(")")))(input)?;
-        println!("side effect args = {:?}", args);
-        println!("side effect input = {:?}", input);
         let (_input, side_effect_arguments) = separated_list0(ws(tag(",")), ws(Expr::parse))(args)?;
 
-        println!(
-            "side effect side_effect_arguments = {:?}",
-            side_effect_arguments
-        );
-        println!("side effect input = {:?}", input);
         let (input, binding) = opt(preceded(ws(tag("as")), identifier))(input)?;
         Ok((
             input,
@@ -483,6 +466,7 @@ mod tests {
         let (rest, expr) = Expr::parse(r#""foo""#).unwrap();
         let lit_str = expr.unwrap_lit_str();
         assert_eq!(lit_str.value, "foo");
+        assert_eq!(rest, "");
     }
 
     #[test]
@@ -490,6 +474,7 @@ mod tests {
         let (rest, expr) = Expr::parse("foo").unwrap();
         let var = expr.unwrap_var();
         assert_eq!(var.name, "foo");
+        assert_eq!(rest, "");
     }
 
     #[test]
@@ -498,21 +483,22 @@ mod tests {
         let add_op = expr.unwrap_add();
         assert_eq!(add_op.lhs.unwrap_var().name, "foo");
         assert_eq!(add_op.rhs.unwrap_var().name, "bar");
+        assert_eq!(rest, "");
     }
 
     #[test]
     fn test_expr_add_lit_var_parse() {
         let (rest, expr) = Expr::parse("'foo' + bar").unwrap();
-        println!("{:?}", expr);
         let add_op = expr.unwrap_add();
         assert_eq!(add_op.lhs.unwrap_lit_str().value, "foo");
         assert_eq!(add_op.rhs.unwrap_var().name, "bar");
+        assert_eq!(rest, "");
     }
 
     #[test]
     fn test_expr_add_nested_parse() {
         let (rest, expr) = Expr::parse("'foo' + bar + baz").unwrap();
-        println!("{:?}", expr);
+        assert_eq!(rest, "");
         let add_op = expr.unwrap_add();
         assert_eq!(add_op.lhs.unwrap_lit_str().value, "foo");
         let rhs = add_op.rhs.unwrap_add();

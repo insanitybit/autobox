@@ -9,3 +9,4 @@ edition = "2021"
 eyre = "0.6.8"
 syn = { version = "1.0.102", features = ["parsing", "full", "extra-traits", "visit"] }
 walkdir = "2.3.2"
+autobox-effect-parser = { path = "../autobox-effect-parser" }

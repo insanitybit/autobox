@@ -201,6 +201,8 @@ pub struct DeclareMacro<'a> {
     pub args: Args<'a>,
     pub side_effects: SideEffects<'a>,
     pub returns: Option<Expr<'a>>,
+    // todo: strictly require function calls to be to declared, inferred, or pure functions
+    // pub require_inner_calls_marked: bool,
 }
 
 impl<'a> DeclareMacro<'a> {

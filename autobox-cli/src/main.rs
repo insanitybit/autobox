@@ -1,13 +1,15 @@
-#![allow(unused_imports, dead_code, unreachable_code)]
+#![allow(unused_imports, dead_code, unreachable_code, unused_variables)]
+
+use autobox_effect_parser::ast::{DeclareMacro, Expr};
 
 use eyre::{eyre, Report, Result, WrapErr};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 use syn::__private::ToTokens;
 use syn::visit::{self, Visit};
-use syn::{Attribute, ExprCall, ExprPath, ItemFn};
+use syn::{Attribute, ExprCall, ExprPath, ItemFn, Local};
 use walkdir::WalkDir;
 
 fn read_ast(path: &std::path::Path) -> Result<syn::File> {
@@ -101,283 +103,6 @@ fn get_fn_name_from_call(call: &ExprCall) -> String {
     }
 }
 
-// example: T + "/" + U as O
-#[derive(Clone, Debug)]
-struct EffectExpr {
-    // todo: Evaluate tokens into simple AST
-    tokens: String,
-}
-
-impl EffectExpr {
-    fn execute(&self, args: &HashMap<String, String>) -> String {
-        let result = self.tokens.clone();
-        // remove single quotes, which are literals
-        let mut result = result.replace("'", "");
-        // This is a hack that *will* break things trivially
-        // example: if it replaces "T" with "value" and then
-        // one of the args is named "value" it will replace *that* too
-        // - awful, moving on
-        for (key, value) in args {
-            if key == "_" {
-                continue;
-            }
-            result = result.replace(key, value);
-        }
-        // We only support "+" for now lol sorry
-        let parts = result.split(" + ");
-        parts.collect()
-    }
-}
-
-// example:
-// read_file(T)
-//           ^
-#[derive(Clone, Debug)]
-enum SideEffectArg {
-    // todo: support expr, not doing that today, use `eval`
-    // example: `read_file(T + "/" + U)`
-    //                     ^^^^^^^^^^^
-    Expr(EffectExpr),
-    // example: `read_file(T)`
-    //                     ^
-    Binding(String),
-}
-
-impl SideEffectArg {
-    fn as_binding(&self) -> String {
-        match self {
-            SideEffectArg::Expr(_) => {
-                panic!("Not a binding")
-            }
-            SideEffectArg::Binding(b) => b.clone(),
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-struct ResolvedSideEffect {
-    name: String,
-    args: Vec<String>,
-}
-
-/// example: `read_file(U) as O`
-#[derive(Clone, Debug)]
-struct SideEffectClause {
-    /// example: `read_file`
-    effect_name: String,
-    /// Comma separated list of arguments to the side effect
-    /// example: `U`
-    effect_args: Vec<SideEffectArg>,
-    /// example: `O`
-    binding: String, // "" if no binding
-}
-
-impl SideEffectClause {
-    fn execute(&self, resolved_args: &HashMap<String, String>) -> ResolvedSideEffect {
-        // todo: support binding the output of the side effect
-        let mut args = Vec::new();
-        for effect_arg in &self.effect_args {
-            let arg_binding = effect_arg.as_binding(); // panic on expr
-            match resolved_args.get(&arg_binding) {
-                Some(value) => {
-                    args.push(value.clone());
-                }
-                None => {
-                    panic!("No value for binding {}", arg_binding);
-                }
-            }
-        }
-        ResolvedSideEffect {
-            name: self.effect_name.clone(),
-            args,
-        }
-    }
-}
-
-/// note: Expressions start with `eval`
-/// note: All Expressions must come before side effects
-/// example:
-/// side_effects=(
-///    eval(F + "/" + T) as U,
-///    read_file(F + "/" + T) as O
-/// )
-#[derive(Default, Debug, Clone)]
-struct SideEffects {
-    /// side_effects=(
-    ///    eval(F + "/" + T) as U,
-    /// // ^^^^^^^^^^^^^^^^^ expressions start with `eval` (dumb but idk)
-    ///    read_file(U) as O
-    /// )
-    expressions: Vec<DeclareExpr>,
-    /// side_effects=(
-    ///    eval(F + "/" + T) as U,
-    ///    read_file(U) as O
-    /// // ^^^^^^^^^^^^^^^^^ effect clauses
-    /// )
-    effect_clauses: Vec<SideEffectClause>,
-}
-
-impl SideEffects {
-    // resolve any new bindings created in the `eval` expressions
-    // add those to `resolved_args`
-    fn execute(&self, resolved_args: &mut HashMap<String, String>) -> Vec<ResolvedSideEffect> {
-        for expr in &self.expressions {
-            expr.execute(resolved_args);
-        }
-
-        // todo: Not supporting tracking the values returned by an effect function rn
-        let mut resolved_effects = Vec::new();
-        for effect_clause in &self.effect_clauses {
-            let resolved_effect = effect_clause.execute(resolved_args);
-            resolved_effects.push(resolved_effect);
-        }
-
-        resolved_effects
-    }
-}
-
-fn find_closing_paren(s: &str) -> usize {
-    let mut paren_count = 0;
-    for (i, c) in s.chars().enumerate() {
-        match c {
-            '(' => paren_count += 1,
-            ')' => {
-                paren_count -= 1;
-                if paren_count == 0 {
-                    return i;
-                }
-            }
-            _ => {}
-        }
-    }
-    panic!("No closing paren")
-}
-
-// fixme: This parser sucks and relies on whitespace and formatting quirks of a Display impl
-fn parse_side_effects(tokens: &str) -> Option<SideEffects> {
-    if tokens.find("side_effects =").is_none() {
-        return None;
-    }
-
-    let side_effects_start = tokens.find("side_effects = (").unwrap() + "side_effects = ".len();
-    let side_effects_end = find_closing_paren(&tokens[side_effects_start..]);
-    let tokens = &tokens[side_effects_start + 1..][..side_effects_end];
-    let mut expressions = Vec::new();
-    let mut effect_clauses = Vec::new();
-
-    let mut expression = tokens;
-
-    loop {
-        if !expression.starts_with("eval") {
-            break;
-        }
-        if expression.is_empty() {
-            break;
-        }
-        let line_ix = expression.find(',');
-        let (line, line_ix) = match line_ix {
-            // skip "eval"
-            Some(line_ix) => (&expression[4..line_ix], line_ix),
-            None => break,
-        };
-
-        let mut split = line.split(" as ");
-        let expr = split.next().unwrap().trim();
-        let expr = remove_surrounding(expr, "(");
-        let binding = split.next().unwrap().trim();
-        expressions.push(DeclareExpr {
-            expression: EffectExpr {
-                tokens: expr.to_string(),
-            },
-            binding: binding.to_string(),
-        });
-
-        expression = &expression[line_ix + 1..]
-    }
-
-    loop {
-        if expression.is_empty() {
-            break;
-        }
-        let line_ix = expression.find(',');
-        let (line, line_ix) = match line_ix {
-            Some(line_ix) => (&expression[4..line_ix], line_ix),
-            None => (&expression[..], expression.len()),
-        };
-        let mut split = line.split('(');
-        let fn_name = split.next().unwrap().trim();
-        let mut split = split.next().unwrap().split(") as ");
-        let args = split.next().unwrap().trim();
-        let binding = split.next().unwrap().trim();
-        let binding = binding.strip_suffix(")").unwrap_or(binding);
-
-        effect_clauses.push(SideEffectClause {
-            effect_name: fn_name.to_string(),
-            effect_args: args
-                .split(", ")
-                .map(|arg| {
-                    if arg.starts_with("eval") {
-                        SideEffectArg::Expr(EffectExpr {
-                            tokens: arg.to_string(),
-                        })
-                    } else {
-                        SideEffectArg::Binding(arg.to_string())
-                    }
-                })
-                .collect(),
-            binding: binding.to_string(),
-        });
-        expression = &expression[line_ix..]
-    }
-    Some(SideEffects {
-        expressions,
-        effect_clauses,
-    })
-}
-
-/// example: `foo as F`
-#[derive(Debug, Clone)]
-struct DeclareArg {
-    /// `foo`
-    argument_name: String,
-    /// `F`
-    argument_binding: String,
-}
-
-impl DeclareArg {
-    fn parse_arg(input: &str) -> Self {
-        let mut pair = input.split(" as ");
-        let argument_name = pair.next().unwrap().to_string();
-        let argument_binding = pair.next().unwrap().to_string();
-        Self {
-            argument_name,
-            argument_binding,
-        }
-    }
-}
-
-/// An EffectExpr in a `declare` invocation
-#[derive(Clone, Debug)]
-struct DeclareExpr {
-    expression: EffectExpr,
-    binding: String,
-}
-
-impl DeclareExpr {
-    fn execute(&self, resolved_args: &mut HashMap<String, String>) {
-        let value = self.expression.execute(resolved_args);
-        resolved_args.insert(self.binding.clone(), value.clone());
-    }
-}
-
-/// The `declare` macro attribute
-#[derive(Clone, Debug)]
-struct DeclareAttribute {
-    args: Vec<DeclareArg>,
-    side_effects: Option<SideEffects>,
-    returns: EffectExpr,
-}
-
 fn remove_surrounding<'a>(s: &'a str, r: &str) -> &'a str {
     let s = s.strip_prefix(r).unwrap_or(s);
     let r = match r {
@@ -387,73 +112,6 @@ fn remove_surrounding<'a>(s: &'a str, r: &str) -> &'a str {
     s.strip_suffix(r).unwrap_or(s)
 }
 
-impl DeclareAttribute {
-    fn execute(&self, parameters: Vec<String>) -> Vec<ResolvedSideEffect> {
-        let mut resolved_args = self
-            .args
-            .iter()
-            .zip(&parameters)
-            .map(|(arg, param)| {
-                (
-                    arg.argument_name.clone(),
-                    remove_surrounding(param, "\"").to_string(),
-                )
-            })
-            .collect::<HashMap<_, _>>();
-        for (arg, param) in self.args.iter().zip(parameters) {
-            resolved_args.insert(
-                arg.argument_binding.clone(),
-                remove_surrounding(&param, "\"").to_string(),
-            );
-        }
-
-        // execute side effects
-        if let Some(ref side_effects) = self.side_effects {
-            side_effects.execute(&mut resolved_args)
-        } else {
-            vec![]
-        }
-    }
-}
-
-// This "parser" sucks and relies on the token formatting being
-// precise
-fn parse_args(args: &str) -> Vec<DeclareArg> {
-    let start_index = args.find("args = (").unwrap() + "args = (".len();
-    let end_index = args[start_index..].find(")").unwrap();
-    let args = &args[start_index..][..end_index];
-    let mut parsed_args = Vec::new();
-    let args = args.split(",");
-    for arg in args {
-        let arg = arg.trim();
-        let arg = DeclareArg::parse_arg(arg);
-        parsed_args.push(arg);
-    }
-    parsed_args
-}
-
-fn parse_returns(returns: &str) -> EffectExpr {
-    let start_index = returns.find("returns = (").unwrap() + "returns = ( ".len();
-    let end_index = returns[start_index..].find(")").unwrap();
-    let returns = &returns[start_index..][..end_index];
-    EffectExpr {
-        tokens: returns.to_string(),
-    }
-}
-
-impl DeclareAttribute {
-    fn from_attribute(attribute: &Attribute) -> Self {
-        let attribute_tokens = attribute.tokens.to_string();
-        let args = parse_args(&attribute_tokens);
-        let side_effects = parse_side_effects(&attribute_tokens);
-        let returns = parse_returns(&attribute_tokens);
-        Self {
-            args,
-            side_effects,
-            returns,
-        }
-    }
-}
 
 // Resolves arguments to a call
 // If an argument is unknown it becomes "*" (terrible)
@@ -490,6 +148,21 @@ fn resolve_arguments(call: ExprCall) -> Vec<String> {
     }
     resolved_args
 }
+
+// A Visitor impl that collects a "trace" of the path from a function's start
+// to the targeted function call
+struct TracingVisitor<'a> {
+    fn_call: &'a ExprCall,
+    arg_to_trace: u8, // the index of the argument we want to trace
+}
+
+impl<'ast, 'a> Visit<'ast> for TracingVisitor<'a> {
+    fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
+        // This is where our trace begins, we need to trace the entire ast
+        // from this point until the call, building up
+    }
+}
+
 
 // This program should print out:
 // Main requires `read_file("~/filename.txt")`
@@ -529,30 +202,343 @@ fn main() -> Result<()> {
         }
     }
 
-    let mut declarations = HashMap::new();
+    // let mut declarations = HashMap::new();
 
     for name in declared_fn_calls.keys() {
         // todo: handle more than one attribute
         let attribute = &declared_item_fns[&name[..]].attrs[0];
-        let declaration = DeclareAttribute::from_attribute(attribute);
-        declarations.insert(name.clone(), declaration);
+        // let declaration = DeclareAttribute::from_attribute(attribute);
+        // declarations.insert(name.clone(), declaration);
     }
 
-    let mut resolved_side_effects = Vec::new();
-    // Find the calls, evaluate them given their arguments
-    for (name, call) in declared_fn_calls {
-        // todo: for now we don't do any fancy resolution of values, we just
-        // assume they are static
-        // retrieve the arguments to the call
-
-        let arguments = resolve_arguments(call.clone());
-        let declaration = declarations.get(&name[..]).unwrap();
-        resolved_side_effects.extend_from_slice(&declaration.execute(arguments)[..]);
-    }
-
-    println!("resolved_side_effects: {:?}", resolved_side_effects);
+    // let mut resolved_side_effects = Vec::new();
+    // // Find the calls, evaluate them given their arguments
+    // for (name, call) in declared_fn_calls {
+    //     // todo: for now we don't do any fancy resolution of values, we just
+    //     // assume they are static
+    //     // retrieve the arguments to the call
+    //
+    //     let arguments = resolve_arguments(call.clone());
+    //     let declaration = declarations.get(&name[..]).unwrap();
+    //     resolved_side_effects.extend_from_slice(&declaration.execute(arguments)[..]);
+    // }
+    //
+    // println!("resolved_side_effects: {:?}", resolved_side_effects);
 
     // and now we can generate policy
 
     Ok(())
+}
+
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use super::*;
+
+    #[test]
+    fn trace_var() {
+        let rust_code = r#"
+        #[effect::declare(
+            args=(a as A, b as B),
+            side_effects=(read_file(a)),
+            returns=(A + '/' + B),
+        )]
+        fn fn_with_effects(a: &str, b: &str) {
+            // pretend there are effects here
+            format!("{a}/{b}")
+        }
+
+        fn unknown() -> &str {
+            "foo"
+        }
+
+        #[effect::entrypoint]
+        fn main() {
+            let x = "foo";
+            let y = x;
+            fn_with_effects(y, "bar");
+            let uk = unknown();
+            let z = fn_with_effects(y, uk);
+        }
+        "#;
+
+        let ast = syn::parse_file(rust_code).unwrap();
+        let entrypoint = find_entrypoint(&ast).unwrap();
+        let all_declared_fns = get_all_declared_fns(&ast);
+
+        // `variables` is a mapping of (i, variable_name) -> VariableMetadata
+        // where `i` is the instance number of that variable, allowing us to differentiate
+        // between variables with the same name (due to shadowing)
+        let mut variables = BTreeMap::new();
+
+        // We're going to track all 'let' statements, and attach metadata
+        // about them to the variable name
+        for (i, statement) in entrypoint.block.stmts.iter().enumerate() {
+            let i = i as u16;  // dont put > 2^16 statements in your code!!!
+            println!("i: {i:#?}");
+            match statement {
+                syn::Stmt::Local(local) => {
+                    // for now we only support single Ident bindings
+                    let var_name = extract_variables_from_pat(&local.pat)[0];
+                    variables.insert(
+                        (i, var_name),
+                        VariableMetadata::new(
+                            var_name,
+                            i as u16,
+                            local,
+                            get_variable_state(&local.init.as_ref().unwrap().1.as_ref(), i, &variables, &all_declared_fns),
+                        )
+                    );
+                }
+                syn::Stmt::Semi(syn::Expr::Call(fn_call), _) => {
+                    // println!("fn_call: {:#?}", fn_call);
+                    for arg in fn_call.args.iter() {
+                        // Figure out what we know about the arguments
+                        match arg {
+                            syn::Expr::Path(path) => {
+                                let var_name = &path.path.segments[0].ident;
+                                let arg_var = find_variable_metadata(var_name, i as u16, &variables).unwrap();
+                                println!("arg_var: {:#?}", arg_var);
+
+                            }
+                            syn::Expr::Lit(lit) => {
+                                println!("lit: {lit:#?}");
+
+
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        println!("variables: {:#?}", variables);
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DeclaredItemFn<'a> {
+    item_fn: &'a ItemFn,
+    declaration: DeclareMacro<'a>,
+}
+
+
+/// find all functions that are marked `declare`
+fn get_all_declared_fns<'a>(ast: &'a syn::File) -> HashMap<String, DeclaredItemFn<'a>> {
+    ItemFnVisitor::collect_from_ast(&ast)
+        .item_fns
+        .into_iter()
+        .flat_map(|f| {
+            if check_if_declare(&f) {
+                // todo: support multiple attrs
+                // todo: Yeah yeah I leak it whatever
+                let macro_tokens = Box::leak(f.attrs[0].tokens.to_string().into_boxed_str());
+                let (_, declaration) = DeclareMacro::parse(&*macro_tokens).unwrap();
+                Some((f.sig.ident.to_string(), DeclaredItemFn {
+                    item_fn: f,
+                    declaration,
+                }))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn get_variable_state(
+    expression: &syn::Expr,
+    index: u16,
+    variables: &BTreeMap<(u16, &syn::Ident), VariableMetadata>,
+    all_declared_fns: &HashMap<String, DeclaredItemFn<'_>>,
+) -> VariableState {
+    match expression {
+        syn::Expr::Path(ref path) => {
+            let var_name = &path.path.segments[0].ident;
+            let var = find_variable_metadata(var_name, index, variables).unwrap();
+            var.variable_state.clone()
+        }
+        syn::Expr::Lit(ref lit) => {
+            match lit.lit {
+                syn::Lit::Str(ref s) => VariableState::value(s.value()),
+                _ => {
+                    println!("unsupported literal type for: {:#?}", expression);
+                    VariableState::hole()
+                },
+            }
+        }
+        syn::Expr::Call(ref call) => {
+            let fn_name = match call.func.as_ref() {
+                syn::Expr::Path(ref path) => &path.path.segments[0].ident,
+                _ => {
+                    panic!("unsupported function call: {:#?}", expression);
+                }
+            };
+            let fn_item = match all_declared_fns.get(&fn_name.to_string()) {
+                Some(f) => f,
+                None => {
+                    // We have no insight into this function
+                    return VariableState::hole();
+                }
+            };
+            // Given a call we need to calculate the return value
+            // based on its inputs
+            let mut arg_states = Vec::new();
+            for arg in call.args.iter() {
+                arg_states.push(get_variable_state(arg, index, variables, all_declared_fns));
+            }
+            // Now we have to calculate the state of the return value
+
+            evaluate_declared_fn(fn_item, arg_states)
+        }
+        _ => {
+            println!("Unsupported expression type for: {:#?}", expression);
+            VariableState::hole()
+        },
+    }
+}
+
+fn evaluate_declared_fn(declared_fn: &DeclaredItemFn<'_>, arguments: Vec<VariableState>) -> VariableState {
+    let declaration = &declared_fn.declaration;
+    let resolved_arguments: HashMap<_, _> = declaration.args.args.iter().zip(arguments.iter()).map(|(arg, state)| {
+        [(arg.arg_binding, state), (arg.arg_name, state)]
+    }).flatten().collect();
+    let returns = match declaration.returns {
+        Some(ref returns) => returns,
+        None => {
+            // If there are no returns, then we can't know anything about the return value
+            return VariableState::hole();
+        }
+    };
+
+    let mut return_states = VariableState { constraints: vec![] };
+    evaluate_expr(&returns, &resolved_arguments, &mut return_states);
+    return_states
+}
+
+fn evaluate_expr(expr: &Expr, arguments: &HashMap<&str, &VariableState>, variable_state: &mut VariableState) {
+    match expr {
+        Expr::LitStr(s) => {variable_state.constraints.push(VariableStateConstraint::Value(s.value.to_string()));},
+        Expr::Var(v) => {
+            let var_states = arguments.get(v.name).unwrap();
+            variable_state.constraints.extend(var_states.constraints.clone());
+        }
+        Expr::Add(add) => {
+            evaluate_expr(&add.lhs, arguments, variable_state);
+            evaluate_expr(&add.rhs, arguments, variable_state);
+        }
+    }
+}
+
+struct FunctionCall<'a> {
+    name: &'a syn::Ident,
+    arguments: Vec<&'a syn::Expr>,
+}
+
+fn find_variable_metadata<'a>(
+    find_var_name: &'a syn::Ident,
+    last_before: u16,
+    variables: &'a BTreeMap<(u16, &'a syn::Ident), VariableMetadata<'a>>
+) -> Option<&'a VariableMetadata<'a>> {
+    for ((var_id, var_name), var) in variables.iter().rev() {
+        if find_var_name == *var_name && *var_id <= last_before {
+            return Some(var);
+        }
+    }
+    None
+}
+
+// extract the identifiers from the let binding
+fn extract_variables_from_pat(pat: &syn::Pat) -> Vec<&syn::Ident> {
+    match pat {
+        syn::Pat::Ident(ref ident) => vec![&ident.ident],
+        syn::Pat::Tuple(ref tuple) => tuple
+            .elems
+            .iter()
+            .flat_map(|pat| extract_variables_from_pat(&pat))
+            .collect(),
+        syn::Pat::Wild(_) => vec![],
+        _ => panic!("unsupported pattern: {:#?}", pat),
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum VariableStateConstraint {
+    Hole,
+    Value(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct VariableState {
+    pub constraints: Vec<VariableStateConstraint>,
+}
+
+impl VariableState {
+    pub fn optimize(self) -> Self {
+        let mut constraints = Vec::with_capacity(1);
+        let mut combined = String::new();
+        for constraint in self.constraints {
+            match constraint {
+                VariableStateConstraint::Value(s) => {
+                    combined.push_str(&s);
+                }
+                VariableStateConstraint::Hole => {
+                    if combined.is_empty() {
+                        constraints.push(VariableStateConstraint::Hole);
+                    } else {
+                        let combined = std::mem::take(&mut combined);
+                        constraints.push(VariableStateConstraint::Value(combined));
+                        constraints.push(VariableStateConstraint::Hole);
+                    }
+                }
+            }
+        }
+        if !combined.is_empty() {
+            constraints.push(VariableStateConstraint::Value(combined));
+        }
+        Self { constraints }
+    }
+
+    pub fn value(value: String) -> Self {
+        Self {
+            constraints: vec![VariableStateConstraint::Value(value)],
+        }
+    }
+
+    pub fn hole() -> Self {
+        Self {
+            constraints: vec![VariableStateConstraint::Hole],
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct VariableMetadata<'a> {
+    /// The ident of the variable ie the `x` in `let x = 1;`
+    variable_name: &'a syn::Ident,
+    /// The instance number of this variable, allowing us to differentiate between
+    /// variables with the same name (due to shadowing)
+    variable_instance_id: u16,
+    /// The `local` statement that declared this variable
+    local: &'a syn::Local,
+    /// The known constraints on this variable
+    variable_state: VariableState,
+}
+
+impl<'a> VariableMetadata<'a> {
+    pub fn new(
+        variable_name: &'a syn::Ident,
+        variable_instance_id: u16,
+        local: &'a syn::Local,
+        variable_state: VariableState,
+    ) -> Self {
+        Self {
+            variable_name,
+            variable_instance_id,
+            local,
+            variable_state,
+        }
+    }
 }

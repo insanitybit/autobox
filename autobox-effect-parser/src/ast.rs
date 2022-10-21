@@ -341,27 +341,6 @@ mod tests {
     }
 
     #[test]
-    #[should_panic] // todo: Chained expressions are not supported yet
-    fn test_expr_chain() {
-        let (rest, expr) = Expr::parse("(T + '/' + U").unwrap();
-        assert_eq!(rest, "");
-        assert_eq!(
-            expr.unwrap_add().lhs.unwrap_add().lhs.unwrap_var().name,
-            "T"
-        );
-        assert_eq!(
-            expr.unwrap_add()
-                .lhs
-                .unwrap_add()
-                .rhs
-                .unwrap_lit_str()
-                .value,
-            "/"
-        );
-        assert_eq!(expr.unwrap_add().rhs.unwrap_lit_str().value, "U");
-    }
-
-    #[test]
     fn test_declare_macro_parse() {
         let declare_macro = r"
             args=(foo as F, baz as F),
@@ -498,11 +477,11 @@ mod tests {
     #[test]
     fn test_expr_add_nested_parse() {
         let (rest, expr) = Expr::parse("'foo' + bar + baz").unwrap();
-        assert_eq!(rest, "");
         let add_op = expr.unwrap_add();
-        assert_eq!(add_op.lhs.unwrap_lit_str().value, "foo");
         let rhs = add_op.rhs.unwrap_add();
+        assert_eq!(add_op.lhs.unwrap_lit_str().value, "foo");
         assert_eq!(rhs.lhs.unwrap_var().name, "bar");
         assert_eq!(rhs.rhs.unwrap_var().name, "baz");
+        assert_eq!(rest, "");
     }
 }

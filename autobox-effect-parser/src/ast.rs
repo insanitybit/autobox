@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use nom::{error::ParseError, IResult};
 use nom::branch::alt;
 use nom::bytes::complete::{
@@ -28,7 +29,7 @@ where
 
 #[derive(Debug, Clone)]
 pub struct Arg<'a> {
-    pub arg_name: &'a str,
+    pub arg_name: Cow<'a, str>,
     pub arg_binding: &'a str,
 }
 
@@ -40,7 +41,7 @@ impl<'a> Arg<'a> {
         Ok((
             input,
             Self {
-                arg_name,
+                arg_name: Cow::Borrowed(arg_name),
                 arg_binding,
             },
         ))
@@ -199,7 +200,7 @@ impl<'a> SideEffects<'a> {
 #[derive(Debug, Clone)]
 pub struct DeclareMacro<'a> {
     pub args: Args<'a>,
-    pub side_effects: SideEffects<'a>,
+    pub side_effects: Option<SideEffects<'a>>,
     pub returns: Option<Expr<'a>>,
     // todo: strictly require function calls to be to declared, inferred, or pure functions
     // pub require_inner_calls_marked: bool,
@@ -209,7 +210,7 @@ impl<'a> DeclareMacro<'a> {
     pub fn parse(input: &'a str) -> IResult<&str, Self> {
         let (input, _) = opt(ws(tag("(")))(input)?;
         let (input, args) = opt(delimited(preceded(ws(tag("args")), ws(tag("="))), Args::parse, ws(tag(","))))(input)?;
-        let (input, side_effects) = preceded(preceded(ws(tag("side_effects")), ws(tag("="))), SideEffects::parse)(input)?;
+        let (input, side_effects) = opt(preceded(preceded(ws(tag("side_effects")), ws(tag("="))), SideEffects::parse))(input)?;
 
         let (input, returns) = opt(preceded(preceded(ws(tag("returns")), ws(tag("="))), tuple((opt(ws(tag("("))), Expr::parse, opt(ws(tag(")")))))))(input)?;
         let returns = returns.map(|(_, expr, _)| expr);
@@ -362,19 +363,19 @@ mod tests {
         assert_eq!(declare_macro.args.args[0].arg_binding, "F");
         assert_eq!(declare_macro.args.args[1].arg_name, "baz");
         assert_eq!(declare_macro.args.args[1].arg_binding, "B");
-        assert_eq!(declare_macro.side_effects.side_effect_stmts.len(), 3);
+        assert_eq!(declare_macro.side_effects.as_ref().unwrap().side_effect_stmts.len(), 3);
         assert_eq!(
-            declare_macro.side_effects.side_effect_stmts[0].side_effect_name,
+            declare_macro.side_effects.as_ref().unwrap().side_effect_stmts[0].side_effect_name,
             "eval"
         );
         assert_eq!(
-            declare_macro.side_effects.side_effect_stmts[0]
+            declare_macro.side_effects.as_ref().unwrap().side_effect_stmts[0]
                 .side_effect_arguments
                 .len(),
             1
         );
         assert_eq!(
-            declare_macro.side_effects.side_effect_stmts[0].side_effect_arguments[0]
+            declare_macro.side_effects.as_ref().unwrap().side_effect_stmts[0].side_effect_arguments[0]
                 .unwrap_add()
                 .lhs
                 .unwrap_var()
@@ -382,7 +383,7 @@ mod tests {
             "F"
         );
         assert_eq!(
-            declare_macro.side_effects.side_effect_stmts[0].side_effect_arguments[0]
+            declare_macro.side_effects.as_ref().unwrap().side_effect_stmts[0].side_effect_arguments[0]
                 .unwrap_add()
                 .rhs
                 .unwrap_lit_str()
@@ -390,21 +391,21 @@ mod tests {
             "/"
         );
         assert_eq!(
-            declare_macro.side_effects.side_effect_stmts[0].binding,
+            declare_macro.side_effects.as_ref().unwrap().side_effect_stmts[0].binding,
             Some("FS")
         );
         assert_eq!(
-            declare_macro.side_effects.side_effect_stmts[1].side_effect_name,
+            declare_macro.side_effects.as_ref().unwrap().side_effect_stmts[1].side_effect_name,
             "eval"
         );
         assert_eq!(
-            declare_macro.side_effects.side_effect_stmts[1]
+            declare_macro.side_effects.as_ref().unwrap().side_effect_stmts[1]
                 .side_effect_arguments
                 .len(),
             1
         );
         assert_eq!(
-            declare_macro.side_effects.side_effect_stmts[1].side_effect_arguments[0]
+            declare_macro.side_effects.as_ref().unwrap().side_effect_stmts[1].side_effect_arguments[0]
                 .unwrap_add()
                 .lhs
                 .unwrap_var()
@@ -412,7 +413,7 @@ mod tests {
             "FS"
         );
         assert_eq!(
-            declare_macro.side_effects.side_effect_stmts[1].side_effect_arguments[0]
+            declare_macro.side_effects.as_ref().unwrap().side_effect_stmts[1].side_effect_arguments[0]
                 .unwrap_add()
                 .rhs
                 .unwrap_var()
@@ -420,27 +421,27 @@ mod tests {
             "B"
         );
         assert_eq!(
-            declare_macro.side_effects.side_effect_stmts[1].binding,
+            declare_macro.side_effects.as_ref().unwrap().side_effect_stmts[1].binding,
             Some("result")
         );
         assert_eq!(
-            declare_macro.side_effects.side_effect_stmts[2].side_effect_name,
+            declare_macro.side_effects.as_ref().unwrap().side_effect_stmts[2].side_effect_name,
             "read_file"
         );
         assert_eq!(
-            declare_macro.side_effects.side_effect_stmts[2]
+            declare_macro.side_effects.as_ref().unwrap().side_effect_stmts[2]
                 .side_effect_arguments
                 .len(),
             1
         );
         assert_eq!(
-            declare_macro.side_effects.side_effect_stmts[2].side_effect_arguments[0]
+            declare_macro.side_effects.as_ref().unwrap().side_effect_stmts[2].side_effect_arguments[0]
                 .unwrap_var()
                 .name,
             "result"
         );
         assert_eq!(
-            declare_macro.side_effects.side_effect_stmts[2].binding,
+            declare_macro.side_effects.as_ref().unwrap().side_effect_stmts[2].binding,
             None
         );
     }
